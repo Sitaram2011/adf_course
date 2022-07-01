@@ -1,0 +1,86 @@
+{
+	"name": "df_transform_hospital_adm",
+	"properties": {
+		"type": "MappingDataFlow",
+		"typeProperties": {
+			"sources": [
+				{
+					"dataset": {
+						"referenceName": "ds_hospital_adm_raw",
+						"type": "DatasetReference"
+					},
+					"name": "sourceHostpitalAdm"
+				},
+				{
+					"dataset": {
+						"referenceName": "ds_countrylookup",
+						"type": "DatasetReference"
+					},
+					"name": "countrysource"
+				},
+				{
+					"dataset": {
+						"referenceName": "ds_dmdateLookup",
+						"type": "DatasetReference"
+					},
+					"name": "DimDateSource"
+				}
+			],
+			"sinks": [
+				{
+					"dataset": {
+						"referenceName": "ds_processed_hospital_admission_weekly",
+						"type": "DatasetReference"
+					},
+					"name": "sinkweekly"
+				},
+				{
+					"dataset": {
+						"referenceName": "ds_processed_hospital_admission_daily",
+						"type": "DatasetReference"
+					},
+					"name": "sinkDaily"
+				}
+			],
+			"transformations": [
+				{
+					"name": "SelectReqFields"
+				},
+				{
+					"name": "LookupCountry"
+				},
+				{
+					"name": "SelectReqfields2"
+				},
+				{
+					"name": "SplitDailyFromWeekly"
+				},
+				{
+					"name": "AggDimDate"
+				},
+				{
+					"name": "JoinwithDate"
+				},
+				{
+					"name": "weeklyPivot"
+				},
+				{
+					"name": "pivotdaily"
+				},
+				{
+					"name": "SortWeekly"
+				},
+				{
+					"name": "SortDaily"
+				},
+				{
+					"name": "SelectWeeklyForSink"
+				},
+				{
+					"name": "SelectDaily"
+				}
+			],
+			"script": "source(output(\n\t\tcountry as string,\n\t\tindicator as string,\n\t\tdate as date,\n\t\tyear_week as string,\n\t\tvalue as double,\n\t\tsource as string,\n\t\turl as string\n\t),\n\tallowSchemaDrift: true,\n\tvalidateSchema: false,\n\tignoreNoFilesFound: false) ~> sourceHostpitalAdm\nsource(output(\n\t\tcountry as string,\n\t\tcountry_code_2_digit as string,\n\t\tcountry_code_3_digit as string,\n\t\tcontinent as string,\n\t\tpopulation as string\n\t),\n\tallowSchemaDrift: true,\n\tvalidateSchema: false,\n\tignoreNoFilesFound: false) ~> countrysource\nsource(output(\n\t\tdate_key as string,\n\t\tdate as string,\n\t\tyear as string,\n\t\tmonth as string,\n\t\tday as string,\n\t\tday_name as string,\n\t\tday_of_year as string,\n\t\tweek_of_month as string,\n\t\tweek_of_year as string,\n\t\tmonth_name as string,\n\t\tyear_month as string,\n\t\tyear_week as string\n\t),\n\tallowSchemaDrift: true,\n\tvalidateSchema: false,\n\tignoreNoFilesFound: false) ~> DimDateSource\nsourceHostpitalAdm select(mapColumn(\n\t\tcountry,\n\t\tindicator,\n\t\treported_date = date,\n\t\treported_year_week = year_week,\n\t\tvalue,\n\t\tsource\n\t),\n\tskipDuplicateMapInputs: true,\n\tskipDuplicateMapOutputs: true) ~> SelectReqFields\nSelectReqFields, countrysource lookup(SelectReqFields@country == countrysource@country,\n\tmultiple: false,\n\tpickup: 'any',\n\tbroadcast: 'auto')~> LookupCountry\nLookupCountry select(mapColumn(\n\t\tcountry = SelectReqFields@country,\n\t\tindicator,\n\t\treported_date,\n\t\treported_year_week,\n\t\tvalue,\n\t\tsource,\n\t\tcountry = countrysource@country,\n\t\tcountry_code_2_digit,\n\t\tcountry_code_3_digit,\n\t\tpopulation\n\t),\n\tskipDuplicateMapInputs: true,\n\tskipDuplicateMapOutputs: true) ~> SelectReqfields2\nSelectReqfields2 split(indicator == 'Weekly new hospital admissions per 100k' || indicator == 'Weekly new ICU admissions per 100k',\n\tdisjoint: false) ~> SplitDailyFromWeekly@(Weekly, Daily)\nDimDateSource aggregate(groupBy(ecdc_year_week = year+'-W'+lpad(week_of_year,2,'0')),\n\tWeekStartDate = min(date),\n\t\tWeekEndDate = max(date)) ~> AggDimDate\nSplitDailyFromWeekly@Weekly, AggDimDate join(reported_year_week == ecdc_year_week,\n\tjoinType:'inner',\n\tmatchType:'exact',\n\tignoreSpaces: false,\n\tbroadcast: 'auto')~> JoinwithDate\nJoinwithDate pivot(groupBy(country,\n\t\tcountry_code_2_digit,\n\t\tcountry_code_3_digit,\n\t\tpopulation,\n\t\treported_year_week,\n\t\tWeekStartDate,\n\t\tWeekEndDate,\n\t\tsource),\n\tpivotBy(indicator, ['Weekly new hospital admissions per 100k', 'Weekly new ICU admissions per 100k']),\n\tCount = sum(value),\n\tcolumnNaming: '$V_$N',\n\tlateral: true) ~> weeklyPivot\nSplitDailyFromWeekly@Daily pivot(groupBy(country,\n\t\tcountry_code_2_digit,\n\t\tcountry_code_3_digit,\n\t\tpopulation,\n\t\treported_date,\n\t\tsource),\n\tpivotBy(indicator, ['Daily hospital occupancy', 'Daily ICU occupancy']),\n\tcount = sum(value),\n\tcolumnNaming: '$V_$N',\n\tlateral: true) ~> pivotdaily\nweeklyPivot sort(desc(reported_year_week, true),\n\tasc(country, true),\n\tpartitionBy('hash', 1)) ~> SortWeekly\npivotdaily sort(desc(reported_date, true),\n\tasc(country, true),\n\tpartitionBy('hash', 1)) ~> SortDaily\nSortWeekly select(mapColumn(\n\t\tcountry,\n\t\tcountry_code_2_digit,\n\t\tcountry_code_3_digit,\n\t\tpopulation,\n\t\treported_year_week,\n\t\treported_week_start_date = WeekStartDate,\n\t\treported_week_end_date = WeekEndDate,\n\t\tnew_hospital_occupany_count = {Weekly new hospital admissions per 100k_Count},\n\t\tnew_hospital_icu_count = {Weekly new ICU admissions per 100k_Count},\n\t\tsource\n\t),\n\tskipDuplicateMapInputs: false,\n\tskipDuplicateMapOutputs: false) ~> SelectWeeklyForSink\nSortDaily select(mapColumn(\n\t\tcountry,\n\t\tcountry_code_2_digit,\n\t\tcountry_code_3_digit,\n\t\tpopulation,\n\t\treported_date,\n\t\thospital_occupancy_count = {Daily hospital occupancy_count},\n\t\ticy_occupancy_count = {Daily ICU occupancy_count},\n\t\tsource\n\t),\n\tskipDuplicateMapInputs: true,\n\tskipDuplicateMapOutputs: true) ~> SelectDaily\nSelectWeeklyForSink sink(allowSchemaDrift: true,\n\tvalidateSchema: false,\n\tpartitionFileNames:['hospital_admissions_weekly_csv'],\n\ttruncate: true,\n\tumask: 0022,\n\tpreCommands: [],\n\tpostCommands: [],\n\tskipDuplicateMapInputs: true,\n\tskipDuplicateMapOutputs: true,\n\tpartitionBy('hash', 1)) ~> sinkweekly\nSelectDaily sink(allowSchemaDrift: true,\n\tvalidateSchema: false,\n\tpartitionFileNames:['hospital_admissions_daily_csv'],\n\ttruncate: true,\n\tumask: 0022,\n\tpreCommands: [],\n\tpostCommands: [],\n\tskipDuplicateMapInputs: true,\n\tskipDuplicateMapOutputs: true,\n\tpartitionBy('hash', 1)) ~> sinkDaily"
+		}
+	}
+}
