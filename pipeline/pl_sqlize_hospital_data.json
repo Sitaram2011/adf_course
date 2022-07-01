@@ -3,7 +3,7 @@
 	"properties": {
 		"activities": [
 			{
-				"name": "Copy Hospital Data to SQL",
+				"name": "Copy Hospital Data to SQL table",
 				"type": "Copy",
 				"dependsOn": [],
 				"policy": {
